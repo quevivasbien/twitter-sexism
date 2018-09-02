@@ -6,7 +6,7 @@ created 28 Aug 2018 by Mckay Jensen
 import tweepy
 import json
 import re
-from nltk.tokenize import TweetTokenizer
+import pandas as pd
 
 #Credentials to access the Twitter API.
 ACCESS_TOKEN = '925129859206062080-QhH3e0Hj4DVHD2wuEqHj2M2fbTmHEbe'
@@ -83,6 +83,8 @@ def clean_status_text(text, remove_hashtags=False, remove_handles=False,
                       ascii_only=False):
     #Remove URLs:
     text = re.sub(r'https?.*?(?= |$)', '', text)
+    #Replace &amp with &
+    text = re.sub(r'&amp', '&', text)
     #Handle other options
     if remove_hashtags:
         text = re.sub(r'#.*?(?= |$)', '', text)
@@ -98,20 +100,22 @@ def clean_status_text(text, remove_hashtags=False, remove_handles=False,
 def clean_status(status):
     if type(status) is tweepy.models.Status:
         status = status._json
-    res = {
-            'user': status['user']['id'],
-            'is_retweet': 'retweeted_status' in status,
-            'place': status['place'],
-            'timestamp': status['created_at']
-          }
     #The full tweet text is for some reason stored in different places
         #depending on the type of tweet.
     if status['truncated']:
-        res['text'] = status['extended_tweet']['full_text']
+        text = status['extended_tweet']['full_text']
     elif 'retweeded_status' in status and status['retweeted_status']['truncated']:
-        res['text'] = status['retweeted_status']['extended_tweet']['full_text']
+        text = status['retweeted_status']['extended_tweet']['full_text']
     else:
-        res['text'] = clean_status_text(status['text'])
+        text = status['text']
+    res = {
+            'text': clean_status_text(text),
+            'user': status['user']['id'],
+            'is_retweet': 'retweeted_status' in status,
+            'place': status['place'],
+            'lang': status['lang'],
+            'timestamp': status['created_at']
+          }
     return res
 
 
@@ -183,8 +187,24 @@ def get_statuses(ids):
     all_statuses = [clean_status(status) for status in all_statuses]
     return all_statuses
 
+def create_validation_set(approx_size, savename=None):
+    #Download tweets
+    statuses = download_results(approx_size)
+    #Remove non-English tweets
+    statuses = [s for s in statuses if s['lang'] == 'en']
+    #Get text only and remove any blank entries
+    status_text = [s['text'] for s in statuses]
+    status_text = [t for t in status_text if t]
+    if savename:
+        with open(savename, 'w', encoding='utf-8') as fh:
+            json.dump(status_text, fh, ensure_ascii=False)
+    return status_text
 
 
+
+#Takes a tweepy place dict
+#Returns the state the place is located in.
+#If the place is not in the US, will return the country.
 def reduce_place(place):
     if place['country'] != 'United States':
         return place['country']
@@ -192,17 +212,3 @@ def reduce_place(place):
        return place['name']
     elif place['place_type'] == 'city':
         return states[place['full_name'].split(', ')[-1]]
-    
-    
-def tokenize_status_text(text):
-    tokenizer = TweetTokenizer()
-    return tokenizer.tokenize(text.lower())
-
-
-def create_hash_indices(text, hashspace_size):
-    if type(text) is str or type(text) is bytes:
-        text = [text]
-    tokenized_text = [tokenize_status_text(t) for t in text]
-    encoded_text = [[hash(w) % (hashspace_size - 1) + 1 for w in t] \
-                     for t in tokenized_text]
-    return encoded_text
