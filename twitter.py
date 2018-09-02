@@ -6,7 +6,6 @@ created 28 Aug 2018 by Mckay Jensen
 import tweepy
 import json
 import re
-import pandas as pd
 
 #Credentials to access the Twitter API.
 ACCESS_TOKEN = '925129859206062080-QhH3e0Hj4DVHD2wuEqHj2M2fbTmHEbe'
@@ -109,7 +108,8 @@ def clean_status(status):
     else:
         text = status['text']
     res = {
-            'text': clean_status_text(text),
+            'text': clean_status_text(text, remove_hashtags=True,
+                                      remove_handles=True),
             'user': status['user']['id'],
             'is_retweet': 'retweeted_status' in status,
             'place': status['place'],
@@ -117,6 +117,8 @@ def clean_status(status):
             'timestamp': status['created_at']
           }
     return res
+
+
 
 
 class PipingStreamListener(tweepy.StreamListener):
@@ -142,6 +144,7 @@ class PipingStreamListener(tweepy.StreamListener):
             return False
         
         
+        
 class GeolimitedRetriever(object):
     
     def __init__(self):
@@ -160,6 +163,8 @@ class GeolimitedRetriever(object):
             res = clean_status(status)
             clean_results.append(res)
         return clean_results
+
+
 
 
 def download_results(count, savename=None,
