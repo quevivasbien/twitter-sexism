@@ -7,6 +7,11 @@ import tweepy
 import json
 import re
 
+import pandas as pd
+
+from http.client import IncompleteRead
+from urllib3.exceptions import ProtocolError
+
 #Credentials to access the Twitter API.
 ACCESS_TOKEN = '925129859206062080-QhH3e0Hj4DVHD2wuEqHj2M2fbTmHEbe'
 ACCESS_SECRET = 'w91jUCV0RcSLYQbyCQDHeFLDdPQZhUU3WlKX20vhREApc'
@@ -79,16 +84,21 @@ states = {
 
 
 def clean_status_text(text, remove_hashtags=False, remove_handles=False,
-                      ascii_only=False):
-    #Remove URLs:
-    text = re.sub(r'https?.*?(?= |$)', '', text)
-    #Replace &amp with &
-    text = re.sub(r'&amp', '&', text)
+                      remove_urls=False, ascii_only=False):
+    #Replace &amp; with &
+    text = re.sub(r'&amp;?', '&', text)
+    #Replace $gt; with > and &lt; with <
+    text = re.sub('&gt;', '>', text)
+    text = re.sub('&lt;', '<', text)
     #Handle other options
+    if remove_urls:
+        text = re.sub(r'https?.*?(?= |$)', '', text)
     if remove_hashtags:
         text = re.sub(r'#.*?(?= |$)', '', text)
     if remove_handles:
         text = re.sub(r'@.*?(?= |$)', '', text)
+    #Condense whitespace
+    text = re.sub(r'\s+', ' ', text)
     #Return processed text
     if ascii_only:
         return text.encode('ascii', 'ignore')
@@ -108,9 +118,8 @@ def clean_status(status):
     else:
         text = status['text']
     res = {
-            'text': clean_status_text(text, remove_hashtags=True,
-                                      remove_handles=True),
-            'user': status['user']['id'],
+            'text': clean_status_text(text),
+            'id': status['id'],
             'is_retweet': 'retweeted_status' in status,
             'place': status['place'],
             'lang': status['lang'],
@@ -150,12 +159,19 @@ class GeolimitedRetriever(object):
     def __init__(self):
         self.results = []
         self.streamListener = PipingStreamListener(self.results)
-        self.stream = tweepy.Stream(auth=api.auth,
-                                    listener=self.streamListener)
         
     def run_stream(self, geobox, count=1):
         self.streamListener.todo = count
-        self.stream.filter(locations=geobox)
+        while self.streamListener.todo > 0:
+            try:
+                stream = tweepy.Stream(auth=api.auth,
+                                       listener=self.streamListener)
+                stream.filter(locations=geobox, stall_warnings=True)
+            except (IncompleteRead, ProtocolError):
+                print('Something went wrong with the connection. '
+                      'Ignoring and reconnecting...')
+                #Ignore and reconnect
+                continue
         
     def get_clean_results(self):
         clean_results = []
@@ -165,6 +181,9 @@ class GeolimitedRetriever(object):
         return clean_results
 
 
+def publish_json(obj, filename):
+    with open(filename, 'w', encoding='utf-8') as fh:
+        json.dump(obj, fh, ensure_ascii=False)
 
 
 def download_results(count, savename=None,
@@ -173,13 +192,8 @@ def download_results(count, savename=None,
     geo.run_stream(geobox, count)
     results = geo.get_clean_results()
     if savename:
-        with open(savename, 'w', encoding='utf-8') as writer:
-            json.dump(results, writer, ensure_ascii=False)
+        publish_json(results, savename)
     return results
-
-def load_results(filename):
-    with open(filename, 'r', encoding='utf-8') as reader:
-        return json.load(reader)
     
     
 #Takes a list of status IDs (ids) and returns info for each status, including
@@ -201,11 +215,21 @@ def create_validation_set(approx_size, savename=None):
     status_text = [s['text'] for s in statuses]
     status_text = [t for t in status_text if t]
     if savename:
-        with open(savename, 'w', encoding='utf-8') as fh:
-            json.dump(status_text, fh, ensure_ascii=False)
+        publish_json(status_text, savename)
     return status_text
 
-
+def rebuild_sexist_source(original='hatespeech-master/NAACL_SRW_2016.csv',
+                          save_as='NAACL_data.csv'):
+    df = pd.read_csv(original, header=None)
+    sexist_status_ids = list(df[df[1] == 'sexism'][0])
+    sexist_status_text = [s['text'] for s in get_statuses(sexist_status_ids)]
+    neutral_status_ids = list(df[df[1] == 'none'][0])
+    neutral_status_text = [s['text'] for s in get_statuses(neutral_status_ids)]
+    sexist_data = pd.DataFrame({'label': 1, 'tweet': sexist_status_text})
+    neutral_data = pd.DataFrame({'label': 0, 'tweet': neutral_status_text})
+    all_data = pd.concat([sexist_data, neutral_data])
+    all_data.to_csv(save_as)
+    
 
 #Takes a tweepy place dict
 #Returns the state the place is located in.

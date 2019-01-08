@@ -1,97 +1,56 @@
 # -*- coding: utf-8 -*-
 """
-Created on Fri Aug 31 16:46:11 2018
+Created on Tue Sep 4 23:38:09 2018
 
 @author: mckaydjensen
 """
 
-import json
 import pandas as pd
-
-from sklearn.model_selection import train_test_split
-from sklearn import linear_model
-from sklearn import metrics
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.externals import joblib
+import numpy as np
 
 #local packages
-import text_processing as tp
 import twitter
+import text_processing
+
+from keras.preprocessing.text import Tokenizer
+from keras.preprocessing.sequence import pad_sequences
+from keras.models import load_model
+
+np.random.seed(152)
+
+
 
 class SexismClassifier(object):
     
-    def __init__(self, pickled_model='model.pkl',
-                 metadata='model_metadata.json'):
+    def __init__(self, corpus_text='corpus_text.json', saved_model='model.h5'):
+        self.model = load_model(saved_model)
+        MAX_VOCAB_SIZE=20000
+        self.tokenizer = Tokenizer(num_words=MAX_VOCAB_SIZE)
+        self.tokenizer.fit_on_texts(text_processing.load_json(corpus_text))
         
-        self.classifier = joblib.load(pickled_model)
-        
-        with open('model_metadata.json', 'r', encoding='utf-8') as fh:
-            metadata = json.load(fh)
-        self.vectorizer = None
-        if metadata['features'] == 'count':
-            self.vectorizer = CountVectorizer(analyzer='word',
-                                         tokenizer=tp.tokenize_status_text)
-        elif metadata['features'] == 'tfidf':
-            self.vectorizer = TfidfVectorizer(analyzer='word', max_features=5000,
-                                         tokenizer=tp.tokenize_status_text)
-        self.vectorizer.fit(metadata['training_text'])
-        
+   
+    def prepare_text(self, text):
+        text = [text_processing.glove_preprocess(t) for t in text]
+        sequences = self.tokenizer.texts_to_sequences(text)
+        MAX_SEQUENCE_LENGTH = 128
+        data = pad_sequences(sequences, maxlen=MAX_SEQUENCE_LENGTH)
+        return data
     
-    def rebuild_model(self, sexist_src, control_src, features='count',
-                      report=True):
-        #Import data
-        tweets, markers = tp.import_data(sexist_src, control_src)
-        #Separate into train and test sets
-        train_x, validate_x, train_y, validate_y = train_test_split(tweets,
-                                                                    markers)
-        
-        #Set up features
-        xtrain_features, xvalid_features = None, None
-        if features == 'count':
-            self.vectorizer = CountVectorizer(analyzer='word',
-                                        tokenizer=tp.tokenize_status_text)
-        elif features == 'tfidf':
-            # word-level TfidfVectorizer
-            self.vectorizer = TfidfVectorizer(analyzer='word', max_features=5000,
-                                        tokenizer=tp.tokenize_status_text)
-        else:
-            print('features argument must be "count" or "tfidf"')
-            return
-        self.vectorizer.fit(tweets)
-        xtrain_features =  self.vectorizer.transform(train_x)
-        xvalid_features =  self.vectorizer.transform(validate_x)
-        
-        self.classifier = linear_model.LogisticRegression()
-        self.classifier.fit(xtrain_features, train_y)
-        
-        #Pickle model
-        joblib.dump(self.classifier, 'model.pkl')
-        #Save other data about the model
-        metadata = {'features': features, 'training_text': tweets}
-        with open('model_metadata.json', 'w', encoding='utf-8') as fh:
-            json.dump(metadata, fh, ensure_ascii=False)
-        
-        #Predict the labels on validation dataset
-        predictions = self.classifier.predict(xvalid_features)
-        
-        if report:
-            print('Accuracy:',
-                  metrics.accuracy_score(validate_y, predictions))
-            print('Classification Report:\n',
-                  metrics.classification_report(validate_y, predictions))
-        
-        
     def predict(self, text):
         if type(text) in (bytes, str):
             text = [text]
-        features = self.vectorizer.transform(text)
-        return self.classifier.predict(features)
+        data = self.prepare_text(text)
+        return self.model.predict(data)
 
 
 
-def process_data(source_filename):
-    data = twitter.load_results(source_filename)
+def process_data(source_filename, lang=None):
+    data = text_processing.load_json(source_filename)
+    #Remove data with no place info
+    data = [d for d in data if d['place']]
+    #Filter by language if requested
+    if lang:
+        data = [d for d in data if d['lang'] == lang]
     df = pd.DataFrame({
                 'text': [tweet['text'] for tweet in data],
                 'place': [twitter.reduce_place(tweet['place']) for tweet in data],
