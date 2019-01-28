@@ -5,24 +5,27 @@ Created on Sat Sep  1 12:57:26 2018
 @author: mckaydjensen
 """
 
-from nltk.tokenize import TweetTokenizer
 import json
 import re
-#from collections import Counter
+import pandas as pd
+import numpy as np
 
+from nltk.tokenize import TweetTokenizer
+from keras.preprocessing.sequence import pad_sequences
+
+FLAGS = re.MULTILINE | re.DOTALL
+HASHMAP_PATH = 'hashmap.json'
+MAX_INPUT_LENGTH = 40
+
+#load hashing dictionary
+with open(HASHMAP_PATH, encoding='utf-8') as fh:
+    hash_dict = json.load(fh)
+
+
+#Use tweet tokenizer from NLTK to tokenize tweet text	
 def tokenize_status_text(text):
     tokenizer = TweetTokenizer()
     return tokenizer.tokenize(text.lower())
-
-
-#Uniqueness not guaranteed
-def simple_hash(text, hashspace_size):
-    if type(text) is str or type(text) is bytes:
-        text = [text]
-    tokenized_text = [tokenize_status_text(t) for t in text]
-    encoded_text = [[hash(w) % (hashspace_size - 1) + 1 for w in t] \
-                     for t in tokenized_text]
-    return encoded_text
 
 
 def load_json(filename):
@@ -30,54 +33,72 @@ def load_json(filename):
         return json.load(reader)
 
 
-def import_data(sexist_source, control_source, glove_preproc=True):
-    #Import data from source files
-    sexist_tweets = [x for x in load_json(sexist_source) if x]
-    control_tweets = [x for x in load_json(control_source) if x]
-    #Combine and add markers
-    #0 = not sexist; 1 = sexist
-    all_tweets = sexist_tweets + control_tweets
-    if glove_preproc:
-        all_tweets = [glove_preprocess(t) for t in all_tweets]
-    markers = [1]*len(sexist_tweets) + [0]*len(control_tweets)
-    return all_tweets, markers
-
-
+#Preprocess tweet text for best results with pretrained Glove embeddings
 def glove_preprocess(text):
     """
     adapted from https://nlp.stanford.edu/projects/glove/preprocess-twitter.rb
     and from https://www.kaggle.com/c/jigsaw-toxic-comment-classification-challenge/discussion/50350
     """
+    text = re.sub(r'&amp;?', '&', text)
     # Different regex parts for smiley faces
     eyes = "[8:=;]"
     nose = "['`\-]?"
-    text = re.sub(r'(?:https?|www\.)\S+', '<URL>', text)
+    text = re.sub(r'(?:https?|www\.)\S+', '<URL>', text, FLAGS)
     hashtags = re.findall(r'#[^\s]+', text)
     for hashtag in hashtags:
         replacement = ''
         if hashtag.upper() == hashtag:
             replacement = '<HASHTAG> {} <ALLCAPS>'.format(hashtag)
         else:
-            replacement = '<HASHTAG> ' + re.sub(r'(?<=\w)(?=[A-Z])', ' ', hashtag)
+            replacement = '<HASHTAG> ' + re.sub(r'(?<=\w)(?=[A-Z])', ' ', hashtag, FLAGS)
         try:
             text = re.sub(hashtag, replacement, text)
         except:
             print('Problem with hashtag {}... skipping.'.format(hashtag))
-    text = re.sub("\[\[User(.*)\|", '<USER>', text)
-    text = re.sub("<3", '<HEART>', text)
-    text = re.sub("[-+]?[.\d]*[\d]+[:,.\d]*", "<NUMBER>", text)
-    text = re.sub(eyes + nose + "[Dd)]", '<SMILE>', text)
-    text = re.sub("[(d]" + nose + eyes, '<SMILE>', text)
-    text = re.sub(eyes + nose + "p", '<LOLFACE>', text)
-    text = re.sub(eyes + nose + "\(", '<SADFACE>', text)
-    text = re.sub("\)" + nose + eyes, '<SADFACE>', text)
-    text = re.sub(eyes + nose + "[/|l*]", '<NEUTRALFACE>', text)
-    text = re.sub("/", " / ", text)
-    text = re.sub("[-+]?[.\d]*[\d]+[:,.\d]*", "<NUMBER>", text)
-    text = re.sub("([!]){2,}", "! <REPEAT>", text)
-    text = re.sub("([?]){2,}", "? <REPEAT>", text)
-    text = re.sub("([.]){2,}", ". <REPEAT>", text)
+    text = re.sub("\[\[User(.*)\|", '<USER>', text, FLAGS)
+    text = re.sub("<3", '<HEART>', text, FLAGS)
+    text = re.sub("[-+]?[.\d]*[\d]+[:,.\d]*", "<NUMBER>", text, FLAGS)
+    text = re.sub(eyes + nose + "[Dd)]", '<SMILE>', text, FLAGS)
+    text = re.sub("[(d]" + nose + eyes, '<SMILE>', text, FLAGS)
+    text = re.sub(eyes + nose + "p", '<LOLFACE>', text, FLAGS)
+    text = re.sub(eyes + nose + "\(", '<SADFACE>', text, FLAGS)
+    text = re.sub("\)" + nose + eyes, '<SADFACE>', text, FLAGS)
+    text = re.sub(eyes + nose + "[/|l*]", '<NEUTRALFACE>', text, FLAGS)
+    text = re.sub("/", " / ", text, FLAGS)
+    text = re.sub("[-+]?[.\d]*[\d]+[:,.\d]*", "<NUMBER>", text, FLAGS)
+    text = re.sub("([!]){2,}", "! <REPEAT>", text, FLAGS)
+    text = re.sub("([?]){2,}", "? <REPEAT>", text, FLAGS)
+    text = re.sub("([.]){2,}", ". <REPEAT>", text, FLAGS)
     pattern = re.compile(r"(.)\1{2,}")
-    text = pattern.sub(r"\1" + " <ELONG>", text)
+    text = pattern.sub(r"\1" + " <ELONG>", text, FLAGS)
     
     return text
+
+
+#Takes a token (e.g. from tokenize_status_text) and looks up its hash
+# in the hash_dict	
+def hash_token(t):
+    hashcode = hash_dict.get(t)
+    if hashcode is not None:
+        return hashcode
+    else:
+        # Hash unknown tokens as 0
+        return 0
+
+
+#Takes a list of tweet strings, tokenizes them, and hashes the tokens
+#Will return a list of lists of ints
+def tokenize_and_hash(tweets):
+    tweets = [glove_preprocess(t) for t in tweets]
+    tokenized = [tokenize_status_text(t) for t in tweets]
+    hashed = [[hash_token(t) for t in tweet] for tweet in tokenized]
+    return hashed
+
+
+def load_and_prepare_data(feature_csv):
+	data = pd.read_csv(feature_csv, usecols=['label', 'text'])
+	tweets = list(data.text)
+	labels = np.array(data.label)
+	tweets_hashed = tokenize_and_hash(tweets)
+	tweets_padded = pad_sequences(tweets_hashed, maxlen=MAX_INPUT_LENGTH)
+	return tweets_padded, labels

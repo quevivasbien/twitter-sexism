@@ -13,10 +13,13 @@ from http.client import IncompleteRead
 from urllib3.exceptions import ProtocolError
 
 #Credentials to access the Twitter API.
-ACCESS_TOKEN = '925129859206062080-QhH3e0Hj4DVHD2wuEqHj2M2fbTmHEbe'
-ACCESS_SECRET = 'w91jUCV0RcSLYQbyCQDHeFLDdPQZhUU3WlKX20vhREApc'
-CONSUMER_KEY = 'paMrcoKtIGPRBdyBBZTR4Xfnw'
-CONSUMER_SECRET = 'VS7O7B1eVcuTNtjXmbjzZGR1M66hrediieTqQiYu2tgw2wu6qO'
+#Read from text file, which user must create
+API_AUTH_FILE = 'api_auth.txt'
+with open('api_auth.txt') as fh:
+    ACCESS_TOKEN = fh.readline().rstrip()
+    ACCESS_SECRET = fh.readline().rstrip()
+    CONSUMER_KEY = fh.readline().rstrip()
+    CONSUMER_SECRET = fh.readline().rstrip()
 
 
 auth = tweepy.OAuthHandler(CONSUMER_KEY, CONSUMER_SECRET)
@@ -106,14 +109,14 @@ def clean_status_text(text, remove_hashtags=False, remove_handles=False,
         return text
 
 
-def clean_status(status):
+def clean_status(status, get_user_info=True):
     if type(status) is tweepy.models.Status:
         status = status._json
     #The full tweet text is for some reason stored in different places
         #depending on the type of tweet.
     if status['truncated']:
         text = status['extended_tweet']['full_text']
-    elif 'retweeded_status' in status and status['retweeted_status']['truncated']:
+    elif 'retweeted_status' in status and status['retweeted_status']['truncated']:
         text = status['retweeted_status']['extended_tweet']['full_text']
     else:
         text = status['text']
@@ -121,10 +124,17 @@ def clean_status(status):
             'text': clean_status_text(text),
             'id': status['id'],
             'is_retweet': 'retweeted_status' in status,
-            'place': status['place'],
+            'place': status.get('place'),
             'lang': status['lang'],
             'timestamp': status['created_at']
           }
+    if get_user_info:
+        res['user'] = {
+                        'description': status['user'].get('description'),
+                        'followers': status['user'].get('followers_count'),
+                        'location': status['user'].get('location'),
+                        'statuses_count': status['user'].get('statuses_count')
+                      }
     return res
 
 
@@ -154,19 +164,20 @@ class PipingStreamListener(tweepy.StreamListener):
         
         
         
-class GeolimitedRetriever(object):
+class GeolimitedRetriever:
     
     def __init__(self):
         self.results = []
         self.streamListener = PipingStreamListener(self.results)
         
-    def run_stream(self, geobox, count=1):
+    def run_stream(self, count=1, geobox=None, languages=['en']):
         self.streamListener.todo = count
         while self.streamListener.todo > 0:
             try:
                 stream = tweepy.Stream(auth=api.auth,
                                        listener=self.streamListener)
-                stream.filter(locations=geobox, stall_warnings=True)
+                stream.filter(locations=geobox, languages=languages,
+                              stall_warnings=True)
             except (IncompleteRead, ProtocolError):
                 print('Something went wrong with the connection. '
                       'Ignoring and reconnecting...')
@@ -189,7 +200,7 @@ def publish_json(obj, filename):
 def download_results(count, savename=None,
                      geobox=US_GEOBOX+HAWAII_GEOBOX+ALASKA_GEOBOX):
     geo = GeolimitedRetriever()
-    geo.run_stream(geobox, count)
+    geo.run_stream(count, geobox)
     results = geo.get_clean_results()
     if savename:
         publish_json(results, savename)
@@ -206,38 +217,55 @@ def get_statuses(ids):
     all_statuses = [clean_status(status) for status in all_statuses]
     return all_statuses
 
-def create_validation_set(approx_size, savename=None):
-    #Download tweets
-    statuses = download_results(approx_size)
-    #Remove non-English tweets
-    statuses = [s for s in statuses if s['lang'] == 'en']
-    #Get text only and remove any blank entries
-    status_text = [s['text'] for s in statuses]
-    status_text = [t for t in status_text if t]
-    if savename:
-        publish_json(status_text, savename)
-    return status_text
-
-def rebuild_sexist_source(original='hatespeech-master/NAACL_SRW_2016.csv',
-                          save_as='NAACL_data.csv'):
-    df = pd.read_csv(original, header=None)
-    sexist_status_ids = list(df[df[1] == 'sexism'][0])
-    sexist_status_text = [s['text'] for s in get_statuses(sexist_status_ids)]
-    neutral_status_ids = list(df[df[1] == 'none'][0])
-    neutral_status_text = [s['text'] for s in get_statuses(neutral_status_ids)]
-    sexist_data = pd.DataFrame({'label': 1, 'tweet': sexist_status_text})
-    neutral_data = pd.DataFrame({'label': 0, 'tweet': neutral_status_text})
-    all_data = pd.concat([sexist_data, neutral_data])
-    all_data.to_csv(save_as)
+#Takes a dict returned from clean_status()
+#Returns the features that will be plugged into the ML model
+def extract_features(status_dict):
+    return {
+        'text': status_dict['text'],
+        'is_retweet': [int(x) for x in status_dict['is_retweet']],
+        'user_description': status_dict['user']['description'],
+        'user_followers': status_dict['user']['followers'],
+        'user_status_count': status_dict['user']['statuses_count']
+    }
     
 
-#Takes a tweepy place dict
+def rebuild_sexist_source(original='hatespeech-master/NAACL_SRW_2016.csv',
+                          save_as='training_data/NAACL_data.csv'):
+    df = pd.read_csv(original, header=None)
+    #Query Twitter API for status info for each status ID in data source
+    sexist_status_ids = list(df[df[1] == 'sexism'][0])
+    sexist_statuses = get_statuses(sexist_status_ids)
+    neutral_status_ids = list(df[df[1] == 'none'][0])
+    neutral_statuses = get_statuses(neutral_status_ids)
+    #Construct Pandas DataFrame from fetched status data
+    labels = pd.Series([1]*len(sexist_statuses) + [0]*len(neutral_statuses),
+                       name='label')
+    all_statuses = sexist_statuses + neutral_statuses
+    #Only take the relevant features
+    features = pd.DataFrame([extract_features(s) for s in all_statuses])
+    data = pd.concat([labels, features], axis=1)
+    data.to_csv(save_as)
+    
+
+#Takes a dict returned from clean_status()
+#Determines the location this tweet likely came from
 #Returns the state the place is located in.
 #If the place is not in the US, will return the country.
-def reduce_place(place):
-    if place['country'] != 'United States':
-        return place['country']
-    elif place['place_type'] == 'admin':
-       return place['name']
-    elif place['place_type'] == 'city':
-        return states[place['full_name'].split(', ')[-1]]
+def extract_place(status):
+    #Try to get the place from the place data inside the status dict
+    if status['place'] is not None:
+        place = status['place']
+        if place['country'] != 'United States':
+            return place['country']
+        elif place['place_type'] == 'admin':
+            return place['name']
+        elif place['place_type'] == 'city':
+            return states[place['full_name'].split(', ')[-1]]
+    #If the status dict has no place info, get the place from the user data
+    else:
+        place = status['user']['location']
+        place = place.split(', ')[-1]
+        if place in states:
+            return states[place]
+        else:
+            return place
