@@ -24,7 +24,7 @@ with open('api_auth.txt') as fh:
 
 auth = tweepy.OAuthHandler(CONSUMER_KEY, CONSUMER_SECRET)
 auth.set_access_token(ACCESS_TOKEN, ACCESS_SECRET)
-api = tweepy.API(auth)
+api = tweepy.API(auth, wait_on_rate_limit=True)
 
 
 US_GEOBOX = [-125,25,-66,48]
@@ -109,31 +109,42 @@ def clean_status_text(text, remove_hashtags=False, remove_handles=False,
         return text
 
 
-def clean_status(status, get_user_info=True):
+def clean_status(status, get_user_info=True, from_stream=True):
     if type(status) is tweepy.models.Status:
-        status = status._json
-    #The full tweet text is for some reason stored in different places
-        #depending on the type of tweet.
-    if status['truncated']:
-        text = status['extended_tweet']['full_text']
-    elif 'retweeted_status' in status and status['retweeted_status']['truncated']:
-        text = status['retweeted_status']['extended_tweet']['full_text']
+            status = status._json
+    text = ''
+    if from_stream:
+        # The full tweet text is for some reason stored in different places
+            # depending on the type of tweet.
+        if status['truncated']:
+            text = status['extended_tweet']['full_text']
+        elif 'retweeted_status' in status and status['retweeted_status']['truncated']:
+            text = status['retweeted_status']['extended_tweet']['full_text']
+        else:
+            text = status['text']
     else:
-        text = status['text']
+        text = status['full_text']
+    place = status.get('place')
+    # Take only some of the place attributes, the ones we need to identify the
+        # state.
+    if place is not None:
+        place = {k: place[k] for k in \
+                 ['full_name', 'name','place_type','country']}
     res = {
             'text': clean_status_text(text),
             'id': status['id'],
             'is_retweet': 'retweeted_status' in status,
-            'place': status.get('place'),
+            'place': place,
             'lang': status['lang'],
             'timestamp': status['created_at']
           }
     if get_user_info:
         res['user'] = {
-                        'description': status['user'].get('description'),
-                        'followers': status['user'].get('followers_count'),
+                        'id': status['user'].get('id'),
+                        #'description': status['user'].get('description'),
+                        #'followers': status['user'].get('followers_count'),
                         'location': status['user'].get('location'),
-                        'statuses_count': status['user'].get('statuses_count')
+                        #'statuses_count': status['user'].get('statuses_count')
                       }
     return res
 
@@ -209,6 +220,8 @@ def download_results(count, savename=None,
     
 #Takes a list of status IDs (ids) and returns info for each status, including
     #status text.
+#WARNING! This is broken for tweets > 140 chars!! Do not use this if you need
+    #the full tweet text.
 def get_statuses(ids):
     #split into chunks of 100 statuses each since that is the max accepted
         #by tweepy.API.statuses_lookup()
@@ -217,15 +230,30 @@ def get_statuses(ids):
     all_statuses = [clean_status(status) for status in all_statuses]
     return all_statuses
 
+
+def get_user_timeline(user_id, count=1000):
+    statuses = []
+    try:
+        for status in tweepy.Cursor(api.user_timeline, user_id=user_id,
+                                    tweet_mode="extended").items(count):
+            statuses.append(clean_status(status, from_stream=False))
+    except tweepy.error.TweepError:
+		# Assume it is a 401 (permission error). If API auth is set up
+		    # properly, this probably happens because of a user-specific setting
+        return None
+    return statuses
+
+
 #Takes a dict returned from clean_status()
 #Returns the features that will be plugged into the ML model
 def extract_features(status_dict):
     return {
         'text': status_dict['text'],
-        'is_retweet': [int(x) for x in status_dict['is_retweet']],
-        'user_description': status_dict['user']['description'],
-        'user_followers': status_dict['user']['followers'],
-        'user_status_count': status_dict['user']['statuses_count']
+        'is_retweet': int(status_dict['is_retweet']),
+        'place': extract_place(status_dict)
+        #'user_description': status_dict['user']['description'],
+        #'user_followers': status_dict['user']['followers'],
+        #'user_status_count': status_dict['user']['statuses_count']
     }
     
 
@@ -260,11 +288,14 @@ def extract_place(status):
         elif place['place_type'] == 'admin':
             return place['name']
         elif place['place_type'] == 'city':
-            return states[place['full_name'].split(', ')[-1]]
+            return states.get(place['full_name'].split(', ')[-1])
     #If the status dict has no place info, get the place from the user data
     else:
         place = status['user']['location']
-        place = place.split(', ')[-1]
+        try:
+            place = place.split(', ')[-1]
+        except AttributeError:
+            return None
         if place in states:
             return states[place]
         else:

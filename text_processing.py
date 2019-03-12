@@ -54,7 +54,8 @@ def glove_preprocess(text):
         try:
             text = re.sub(hashtag, replacement, text)
         except:
-            print('Problem with hashtag {}... skipping.'.format(hashtag))
+            #print('Problem with hashtag {}... skipping.'.format(hashtag))
+            pass
     text = re.sub("\[\[User(.*)\|", '<USER>', text, FLAGS)
     text = re.sub("<3", '<HEART>', text, FLAGS)
     text = re.sub("[-+]?[.\d]*[\d]+[:,.\d]*", "<NUMBER>", text, FLAGS)
@@ -95,10 +96,15 @@ def tokenize_and_hash(tweets):
     return hashed
 
 
+def prepare_tweet_texts(tweets):
+    tweets_hashed = tokenize_and_hash(tweets)
+    tweets_padded = pad_sequences(tweets_hashed, maxlen=MAX_INPUT_LENGTH)
+    return tweets_padded
+
+
 def load_and_prepare_data(feature_csv):
 	data = pd.read_csv(feature_csv, usecols=['label', 'text'])
 	tweets = list(data.text)
 	labels = np.array(data.label)
-	tweets_hashed = tokenize_and_hash(tweets)
-	tweets_padded = pad_sequences(tweets_hashed, maxlen=MAX_INPUT_LENGTH)
+	tweets_padded = prepare_tweet_texts(tweets)
 	return tweets_padded, labels
