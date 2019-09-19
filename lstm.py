@@ -21,13 +21,16 @@ from sklearn.utils import class_weight
 EMB_WEIGHTS_FILE = 'embedding_weights.npy'
 TRAINING_DATA = 'training_data/NAACL_revised.csv'
 
-ERROR_STATS_FILE = 'ppvs_and_fors.json'
+ERROR_STATS_FILE = 'confusion_matrices.json'
+
+CUTOFF = 0.5
+FOLDS = 10
 
 np.random.seed(152)
 
 
 
-def prob_to_class(predictions, cutoff=0.5):
+def prob_to_class(predictions, cutoff=CUTOFF):
     return np.array([1 if p[0] > cutoff else 0 for p in predictions])
 
 
@@ -75,7 +78,7 @@ def build_model(emb_weights, train_embedding=True):
 
 
 def evaluate_model(X, y, emb_weights, train_embedding=True,
-                   batch_size=500, epochs=20, folds=10, verbose=True):
+                   batch_size=500, epochs=20, folds=FOLDS, verbose=True):
     
     #Split into folds
     #Shuffle both X and y in the same way
@@ -153,9 +156,11 @@ if __name__ == '__main__':
               np.mean(r), np.mean(f)))
         #Save positive predictive values and false omission rates to a json
         # file. These will be useful later.
-        PPVs, FORs = get_PPV_and_FOR(cm)
+        #PPVs, FORs = get_PPV_and_FOR(cm)
+        ##Latest version saves confusion matrices, not the PPVs and FORs
         with open(ERROR_STATS_FILE, 'w') as fh:
-            json.dump({'PPV': PPVs, 'FOR': FORs}, fh)
+            #Change matrix format to match notation in report
+            json.dump([c.tolist() for c in cm], fh)
     elif sys.argv[1] == 'train':
         model = train_model(X, y, emb_weights)
         filename = sys.argv[2] if len(sys.argv) > 2 else 'model.h5'

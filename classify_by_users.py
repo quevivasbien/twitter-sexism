@@ -14,9 +14,12 @@ import json
 import os
 import re
 import sys
+import numpy as np
 
 import twitter
 from make_predictions import get_predictions_by_location
+
+CUTOFF = 0.5
 
 # Takes as an argument the name of the state you want to get data for
 # e.g. state='Alabama'; tries to find the zip file containing data for that
@@ -52,12 +55,12 @@ def make_predictions(state):
         return
     filenames = [features_dir + '/' + f for f in os.listdir(features_dir)]
     for f in filenames:
-        get_predictions_by_location(f)
+        get_predictions_by_location(f, cutoff=CUTOFF)
 
 # Run this after running both of the above functions to generate a list of
 # where each entry is the percent of tweets classified as sexist for each user
 # from the requested state.
-def get_pct_sexist(state, cutoff=0.5):
+def get_pct_sexist(state, cutoff=CUTOFF):
     percentages = []
     features_dir = FEATURES_FOLDER + '/' + state
     for file in os.listdir(features_dir):
@@ -68,6 +71,33 @@ def get_pct_sexist(state, cutoff=0.5):
         percentages.append(pct_sexist)
     return percentages
 
+
+# Reruns the get_pct_sexist method with given cutoff on all states already
+# recorded in old_savefile and saves the new data to new_savefile
+def recompile_sexism_dists(old_savefile=SEXISM_DISTS,
+                           new_savefile=SEXISM_DISTS, cutoff=CUTOFF):
+    with open(old_savefile, 'r') as fh:
+        old_dists = json.load(fh)
+    states = old_dists.keys()
+    new_dists = dict()
+    for state in states:
+        pcts = get_pct_sexist(state, cutoff)
+        new_dists[state] = pcts
+    with open(new_savefile, 'w') as fh:
+        json.dump(new_dists, fh)
+
+
+def get_pure_prob(state):
+    P = []
+    features_dir = FEATURES_FOLDER + '/' + state
+    for file in os.listdir(features_dir):
+        with open(features_dir + '/' + file, 'r', encoding='utf-8') as fh:
+            status_dicts = json.load(fh)
+        P += [s['prediction'] for s in status_dicts]
+    mean = np.mean(P)
+    stderr = np.std(P, ddof=1)/np.sqrt(len(P))
+    return mean, stderr
+    
 
 if __name__ == '__main__':
     with open(SEXISM_DISTS, 'r') as fh:

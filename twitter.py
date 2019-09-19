@@ -231,10 +231,11 @@ def get_statuses(ids):
     return all_statuses
 
 
-def get_user_timeline(user_id, count=1000):
+def get_user_timeline(user_id, count=1000, since_id=None, max_id=None):
     statuses = []
     try:
         for status in tweepy.Cursor(api.user_timeline, user_id=user_id,
+                                    since_id=since_id, max_id=max_id,
                                     tweet_mode="extended").items(count):
             statuses.append(clean_status(status, from_stream=False))
     except tweepy.error.TweepError:
@@ -246,8 +247,8 @@ def get_user_timeline(user_id, count=1000):
 
 #Takes a dict returned from clean_status()
 #Returns the features that will be plugged into the ML model
-def extract_features(status_dict):
-    return {
+def extract_features(status_dict, save_id=False):
+    features = {
         'text': status_dict['text'],
         'is_retweet': int(status_dict['is_retweet']),
         'place': extract_place(status_dict)
@@ -255,6 +256,9 @@ def extract_features(status_dict):
         #'user_followers': status_dict['user']['followers'],
         #'user_status_count': status_dict['user']['statuses_count']
     }
+    if save_id:
+        features['id'] = status_dict['id']
+    return features
     
 
 def rebuild_sexist_source(original='hatespeech-master/NAACL_SRW_2016.csv',
@@ -293,7 +297,7 @@ def extract_place(status):
     else:
         place = status['user']['location']
         try:
-            place = place.split(', ')[-1]
+            place = place.split(', ')[-1].upper()
         except AttributeError:
             return None
         if place in states:
